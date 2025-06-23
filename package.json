@@ -1,0 +1,11 @@
+{
+  "name": "v75_2",
+  "version": "1.0.0",
+  "main": "vix75trader.js",
+  "scripts": {
+    "start": "node vix75trader.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
