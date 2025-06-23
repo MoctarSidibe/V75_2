@@ -21,6 +21,9 @@ let requestId = 1;
 let actualBalance = 0;
 let simulatedBalance = 100; // Simulate $100 starting balance
 let highestSimulatedBalance = 100; // Track highest simulated balance
+let dailyLoss = 0; // Track losses within 24 hours
+let dailyLossResetTime = Date.now() / 1000; // Time to reset daily loss
+const DAILY_LOSS_LIMIT = 5; // 5% of $100 = $5
 let isSubscribed = false;
 
 function connectWebSocket() {
@@ -83,8 +86,8 @@ function handleWebSocketMessage(msg) {
     sendRequest({ balance: 1 });
   } else if (msg.balance) {
     actualBalance = msg.balance.balance;
-    console.log(`Actual Balance: ${actualBalance}, Simulated Balance: ${simulatedBalance}`);
-    fs.appendFileSync('balance.log', `${new Date().toISOString()} - Actual Balance: ${actualBalance}, Simulated Balance: ${simulatedBalance}\n`);
+    console.log(`Actual Balance: ${actualBalance}, Simulated Balance: ${simulatedBalance}, Daily Loss: ${dailyLoss}`);
+    fs.appendFileSync('balance.log', `${new Date().toISOString()} - Actual Balance: ${actualBalance}, Simulated Balance: ${simulatedBalance}, Daily Loss: ${dailyLoss}\n`);
     if (!isSubscribed) {
       if (actualBalance < 1) {
         console.error('Insufficient actual balance for trading:', actualBalance);
@@ -151,7 +154,7 @@ function handleWebSocketMessage(msg) {
   } else if (msg.proposal) {
     const buyParams = {
       buy: msg.proposal.id,
-      price: 1, // Fixed $1 stake
+      price: parseFloat(msg.proposal.ask_price),
     };
     console.log('Placing trade:', buyParams);
     fs.appendFileSync('trades.log', `${new Date().toISOString()} - Placing trade: ${JSON.stringify(buyParams)}\n`);
@@ -160,18 +163,19 @@ function handleWebSocketMessage(msg) {
     console.log('Trade placed successfully:', msg.buy);
     fs.appendFileSync('trades.log', `${new Date().toISOString()} - Trade placed: ${JSON.stringify(msg.buy)}\n`);
     // Update simulated balance based on trade outcome
-    const stake = 1; // Fixed $1 stake
+    const stake = Math.max(1, Math.floor(simulatedBalance * 0.01)); // 1% of simulated balance, min $1
     const payout = msg.buy.payout ? parseFloat(msg.buy.payout) : 0;
     if (payout > 0) {
       simulatedBalance += (payout - stake); // Add profit
     } else {
       simulatedBalance -= stake; // Deduct loss
+      dailyLoss += stake; // Track daily loss
     }
     if (simulatedBalance > highestSimulatedBalance) {
       highestSimulatedBalance = simulatedBalance;
     }
-    console.log(`Trade outcome - Simulated Balance: ${simulatedBalance}`);
-    fs.appendFileSync('balance.log', `${new Date().toISOString()} - Trade outcome - Simulated Balance: ${simulatedBalance}\n`);
+    console.log(`Trade outcome - Stake: ${stake}, Simulated Balance: ${simulatedBalance}, Daily Loss: ${dailyLoss}`);
+    fs.appendFileSync('balance.log', `${new Date().toISOString()} - Trade outcome - Stake: ${stake}, Simulated Balance: ${simulatedBalance}, Daily Loss: ${dailyLoss}\n`);
     lastTradeTime = Date.now() / 1000;
     sendRequest({ balance: 1 }); // Update actual balance
   }
@@ -255,27 +259,37 @@ function priceActionStrategy() {
 }
 
 function placeTrade(decision) {
+  const stake = Math.max(1, Math.floor(simulatedBalance * 0.01)); // 1% of simulated balance, min $1
   const tradeParams = {
     proposal: 1,
     symbol: 'R_75',
     contract_type: decision.toUpperCase(),
-    amount: 1, // Fixed $1 stake
+    amount: stake,
     basis: 'stake',
     currency: 'USD',
     duration: 5,
     duration_unit: 't',
   };
 
-  console.log('Requesting trade proposal:', tradeParams);
-  fs.appendFileSync('debug.log', `${new Date().toISOString()} - Requesting trade proposal: ${JSON.stringify(tradeParams)}\n`);
+  console.log(`Requesting trade proposal: Stake: ${stake}`, tradeParams);
+  fs.appendFileSync('debug.log', `${new Date().toISOString()} - Requesting trade proposal: Stake: ${stake}, ${JSON.stringify(tradeParams)}\n`);
   sendRequest(tradeParams);
 }
 
 function checkStrategy() {
-  if (Date.now() / 1000 - lastTradeTime < TRADE_COOLDOWN) {
+  const currentTime = Date.now() / 1000;
+  if (currentTime - lastTradeTime < TRADE_COOLDOWN) {
     console.log('Trade skipped: Within 5-minute cooldown');
     fs.appendFileSync('debug.log', `${new Date().toISOString()} - Trade skipped: Within 5-minute cooldown\n`);
     return;
+  }
+
+  // Reset daily loss if 24 hours have passed
+  if (currentTime - dailyLossResetTime >= 86400) {
+    dailyLoss = 0;
+    dailyLossResetTime = currentTime;
+    console.log('Daily loss reset');
+    fs.appendFileSync('debug.log', `${new Date().toISOString()} - Daily loss reset\n`);
   }
 
   if (simulatedBalance < 1) {
@@ -294,6 +308,12 @@ function checkStrategy() {
   if (simulatedBalance < highestSimulatedBalance * (1 - drawdownThreshold)) {
     console.log('Trade skipped: Simulated drawdown exceeded');
     fs.appendFileSync('debug.log', `${new Date().toISOString()} - Trade skipped: Simulated drawdown exceeded\n`);
+    return;
+  }
+
+  if (dailyLoss >= DAILY_LOSS_LIMIT) {
+    console.log('Trade skipped: Daily loss limit of $5 reached');
+    fs.appendFileSync('debug.log', `${new Date().toISOString()} - Trade skipped: Daily loss limit of $5 reached\n`);
     return;
   }
 
